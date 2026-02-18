@@ -1,8 +1,90 @@
 import '@angular/localize/init';
 import { ScriptInfo } from '@app/shared/script.utils';
 import { Vin, Vout } from '@interfaces/electrs.interface';
-import { BECH32_CHARS_LW, BASE58_CHARS, HEX_CHARS } from '@app/shared/regex.utils';
+import { BECH32_CHARS_LW, BASE58_CHARS, HEX_CHARS, Network } from '@app/shared/regex.utils';
 import { parseTaproot } from './transaction.utils';
+
+// ---------------------------------------------------------------------------
+// Bech32 / Bech32m checksum validation (BIP-0173 / BIP-0350)
+// ---------------------------------------------------------------------------
+const BECH32_CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+const BECH32_GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+
+function bech32Polymod(values: number[]): number {
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) {
+      if ((b >> i) & 1) {
+        chk ^= BECH32_GENERATOR[i];
+      }
+    }
+  }
+  return chk;
+}
+
+function bech32HrpExpand(hrp: string): number[] {
+  const ret: number[] = [];
+  for (let i = 0; i < hrp.length; i++) {
+    ret.push(hrp.charCodeAt(i) >> 5);
+  }
+  ret.push(0);
+  for (let i = 0; i < hrp.length; i++) {
+    ret.push(hrp.charCodeAt(i) & 31);
+  }
+  return ret;
+}
+
+function verifyBech32Checksum(address: string): boolean {
+  const lower = address.toLowerCase();
+  if (lower !== address && address.toUpperCase() !== address) {
+    return false; // mixed case
+  }
+  const sepIdx = lower.lastIndexOf('1');
+  if (sepIdx < 1 || sepIdx + 7 > lower.length) {
+    return false;
+  }
+  const hrp = lower.slice(0, sepIdx);
+  const data: number[] = [];
+  for (let i = sepIdx + 1; i < lower.length; i++) {
+    const p = BECH32_CHARSET.indexOf(lower[i]);
+    if (p === -1) {
+      return false;
+    }
+    data.push(p);
+  }
+  if (data.length < 6) {
+    return false;
+  }
+  const poly = bech32Polymod([...bech32HrpExpand(hrp), ...data]);
+  // bech32 (segwit v0) checksum constant = 1, bech32m (segwit v1+) = 0x2bc830a3
+  return poly === 1 || poly === 0x2bc830a3;
+}
+
+/**
+ * Returns true if the address passes structural validation (via detectAddressType)
+ * AND bech32/bech32m checksum verification for segwit addresses.
+ * Base58 addresses pass with structural validation only (checksum requires SHA-256).
+ */
+export function validateAddressNetwork(address: string, network: Network): boolean {
+  if (!address) {
+    return false;
+  }
+  const trimmed = address.trim();
+  const addrType = detectAddressType(trimmed, network);
+  if (addrType === 'unknown') {
+    return false;
+  }
+  // For bech32 / bech32m types, also verify the checksum
+  if (addrType === 'v0_p2wpkh' || addrType === 'v0_p2wsh' || addrType === 'v1_p2tr') {
+    return verifyBech32Checksum(trimmed);
+  }
+  // Note: Liquid confidential addresses (lq1…/tlq1…) use blech32, which has a
+  // different generator polynomial (64-bit). Verifying those requires big-int
+  // arithmetic, so we rely on structural validation only for now.
+  return true;
+}
 
 export type AddressType = 'fee'
   | 'empty'

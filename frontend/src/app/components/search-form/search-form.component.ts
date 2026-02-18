@@ -1,4 +1,4 @@
-import { Component, OnInit, ChangeDetectionStrategy, EventEmitter, Output, ViewChild, HostListener, ElementRef, Input } from '@angular/core';
+import { Component, OnInit, ChangeDetectionStrategy, ChangeDetectorRef, EventEmitter, Output, ViewChild, HostListener, ElementRef, Input } from '@angular/core';
 import { UntypedFormBuilder, UntypedFormGroup, Validators } from '@angular/forms';
 import { EventType, NavigationStart, Router } from '@angular/router';
 import { AssetsService } from '@app/services/assets.service';
@@ -10,6 +10,7 @@ import { RelativeUrlPipe } from '@app/shared/pipes/relative-url/relative-url.pip
 import { ApiService } from '@app/services/api.service';
 import { SearchResultsComponent } from '@components/search-form/search-results/search-results.component';
 import { Network, findOtherNetworks, getRegex, getTargetUrl, needBaseModuleChange } from '@app/shared/regex.utils';
+import { validateAddressNetwork } from '@app/shared/address-utils';
 
 @Component({
   selector: 'app-search-form',
@@ -25,6 +26,7 @@ export class SearchFormComponent implements OnInit {
   assets: object = {};
   pools: object[] = [];
   isSearching = false;
+  invalidAddress = false;
   isTypeaheading$ = new BehaviorSubject<boolean>(false);
   typeAhead$: Observable<any>;
   searchForm: UntypedFormGroup;
@@ -65,7 +67,8 @@ export class SearchFormComponent implements OnInit {
     private electrsApiService: ElectrsApiService,
     private apiService: ApiService,
     private relativeUrlPipe: RelativeUrlPipe,
-    private elementRef: ElementRef
+    private elementRef: ElementRef,
+    private cdr: ChangeDetectorRef
   ) {
   }
 
@@ -195,9 +198,10 @@ export class SearchFormComponent implements OnInit {
           const matchesUnixTimestamp = this.regexUnixTimestamp.test(searchText) && parseInt(searchText) <= Math.floor(Date.now() / 1000) && isNetworkBitcoin;
           const matchesTxId = this.regexTransaction.test(searchText) && !this.regexBlockhash.test(searchText);
           const matchesBlockHash = this.regexBlockhash.test(searchText);
-          const matchesAddress = !matchesTxId && this.regexAddress.test(searchText);
+          const matchesAddress = !matchesTxId && validateAddressNetwork(searchText, (this.network as Network) || 'mainnet');
           const publicKey = matchesAddress && searchText.startsWith('0');
-          const otherNetworks = findOtherNetworks(searchText, this.network as any || 'mainnet', this.env);
+          const otherNetworks = findOtherNetworks(searchText, this.network as any || 'mainnet', this.env)
+            .filter((n: { network: Network; address: string; isNetworkAvailable: boolean }) => validateAddressNetwork(searchText, n.network));
           const liquidAsset = this.assets ? (this.assets[searchText] || []) : [];
           const pools = this.pools.filter(pool => pool['name'].toLowerCase().includes(searchText.toLowerCase())).slice(0, 10);
 
@@ -267,6 +271,13 @@ export class SearchFormComponent implements OnInit {
       this.isSearching = true;
 
       if (!this.regexTransaction.test(searchText) && this.regexAddress.test(searchText)) {
+        if (!validateAddressNetwork(searchText, (this.network as Network) || 'mainnet')) {
+          this.invalidAddress = true;
+          this.isSearching = false;
+          this.cdr.markForCheck();
+          setTimeout(() => { this.invalidAddress = false; this.cdr.markForCheck(); }, 3000);
+          return;
+        }
         this.navigate('/address/', searchText);
       } else if (this.regexBlockhash.test(searchText)) {
         this.navigate('/block/', searchText);
